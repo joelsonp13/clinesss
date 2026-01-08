@@ -105,6 +105,12 @@ function convertClineSayToProtoEnum(say: AppClineSay | undefined): ClineSay | un
 		hook_status: ClineSay.HOOK_STATUS,
 		hook_output_stream: ClineSay.HOOK_OUTPUT_STREAM,
 		generate_explanation: ClineSay.GENERATE_EXPLANATION,
+		exploration_auto_start: ClineSay.EXPLORATION_AUTO_START,
+		exploration_auto_complete: ClineSay.EXPLORATION_AUTO_COMPLETE,
+		exploration_auto_continue: ClineSay.EXPLORATION_AUTO_CONTINUE,
+		exploration_auto_error: ClineSay.EXPLORATION_AUTO_ERROR,
+		exploration_cache_hit: ClineSay.EXPLORATION_CACHE_HIT,
+		exploration_phase_transition: ClineSay.EXPLORATION_PHASE_TRANSITION,
 	}
 
 	const result = mapping[say]
@@ -154,6 +160,12 @@ function convertProtoEnumToClineSay(say: ClineSay): AppClineSay | undefined {
 		[ClineSay.GENERATE_EXPLANATION]: "generate_explanation",
 		[ClineSay.HOOK_STATUS]: "hook_status",
 		[ClineSay.HOOK_OUTPUT_STREAM]: "hook_output_stream",
+		[ClineSay.EXPLORATION_AUTO_START]: "exploration_auto_start",
+		[ClineSay.EXPLORATION_AUTO_COMPLETE]: "exploration_auto_complete",
+		[ClineSay.EXPLORATION_AUTO_CONTINUE]: "exploration_auto_continue",
+		[ClineSay.EXPLORATION_AUTO_ERROR]: "exploration_auto_error",
+		[ClineSay.EXPLORATION_CACHE_HIT]: "exploration_cache_hit",
+		[ClineSay.EXPLORATION_PHASE_TRANSITION]: "exploration_phase_transition",
 	}
 
 	return mapping[say]

@@ -15,6 +15,7 @@ import { load_mcp_documentation_variants } from "./load_mcp_documentation"
 import { new_task_variants } from "./new_task"
 import { plan_mode_respond_variants } from "./plan_mode_respond"
 import { read_file_variants } from "./read_file"
+import { reasoning_functions_variants } from "./reasoning_functions"
 import { replace_in_file_variants } from "./replace_in_file"
 import { search_files_variants } from "./search_files"
 import { use_mcp_tool_variants } from "./use_mcp_tool"
@@ -44,6 +45,7 @@ export function registerClineToolSets(): void {
 		...new_task_variants,
 		...plan_mode_respond_variants,
 		...read_file_variants,
+		...reasoning_functions_variants,
 		...replace_in_file_variants,
 		...search_files_variants,
 		...use_mcp_tool_variants,

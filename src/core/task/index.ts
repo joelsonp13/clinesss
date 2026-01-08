@@ -949,6 +949,9 @@ export class Task {
 
 		await this.say("text", task, images, files)
 
+		// Initialize intelligent thinking for the new task
+		await this.toolExecutor.initializeTaskThinking(task || "Task without description")
+
 		this.taskState.isInitialized = true
 
 		const imageBlocks: ClineImageContentBlock[] = formatResponse.imageBlocks(images)
@@ -2064,6 +2067,11 @@ export class Task {
 				break
 			}
 			case "tool_use":
+				// Skip partial tool blocks - only execute complete tool uses
+				if (block.partial) {
+					break
+				}
+
 				// If we have a pending initial commit, we must block unsafe tools until it finishes.
 				// Safe tools (read-only) can run in parallel.
 				if (this.initialCheckpointCommitPromise) {
@@ -2850,8 +2858,11 @@ export class Task {
 				// Reset auto-retry counter for each new API request
 				this.taskState.autoRetryAttempts = 0
 
-				const recDidEndLoop = await this.recursivelyMakeClineRequests(this.taskState.userMessageContent)
-				didEndLoop = recDidEndLoop
+				// Only make recursive call if tools were used, otherwise let the main loop handle it
+				if (didToolUse) {
+					const recDidEndLoop = await this.recursivelyMakeClineRequests(this.taskState.userMessageContent)
+					didEndLoop = recDidEndLoop
+				}
 			} else {
 				// if there's no assistant_responses, that means we got no text or tool_use content blocks from API which we should assume is an error
 				const { model, providerId } = this.getCurrentProviderInfo()

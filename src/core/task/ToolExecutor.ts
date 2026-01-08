@@ -4,11 +4,14 @@ import { ClineIgnoreController } from "@core/ignore/ClineIgnoreController"
 import { DiffViewProvider } from "@integrations/editor/DiffViewProvider"
 import { BrowserSession } from "@services/browser/BrowserSession"
 import { UrlContentFetcher } from "@services/browser/UrlContentFetcher"
+import { listFiles } from "@services/glob/list-files"
 import { McpHub } from "@services/mcp/McpHub"
 import { ClineAsk, ClineSay } from "@shared/ExtensionMessage"
 import { ClineContent } from "@shared/messages/content"
 import { ClineDefaultTool } from "@shared/tools"
 import { ClineAskResponse } from "@shared/WebviewMessage"
+import * as fs from "fs"
+import * as path from "path"
 import * as vscode from "vscode"
 import { isGPT5ModelFamily, modelDoesntSupportWebp } from "@/utils/model-utils"
 import { ToolUse } from "../assistant-message"
@@ -35,6 +38,7 @@ import { LoadMcpDocumentationHandler } from "./tools/handlers/LoadMcpDocumentati
 import { NewTaskHandler } from "./tools/handlers/NewTaskHandler"
 import { PlanModeRespondHandler } from "./tools/handlers/PlanModeRespondHandler"
 import { ReadFileToolHandler } from "./tools/handlers/ReadFileToolHandler"
+import { ReasoningToolHandler } from "./tools/handlers/ReasoningToolHandler"
 import { ReportBugHandler } from "./tools/handlers/ReportBugHandler"
 import { SearchFilesToolHandler } from "./tools/handlers/SearchFilesToolHandler"
 import { SummarizeTaskHandler } from "./tools/handlers/SummarizeTaskHandler"
@@ -46,12 +50,18 @@ import { IPartialBlockHandler, SharedToolHandler, ToolExecutorCoordinator } from
 import { ToolValidator } from "./tools/ToolValidator"
 import { TaskConfig, validateTaskConfig } from "./tools/types/TaskConfig"
 import { createUIHelpers } from "./tools/types/UIHelpers"
+import { ExplorationScratchpad } from "./tools/utils/ExplorationScratchpad"
+import { IntelligentThinkingSystem } from "./tools/utils/IntelligentThinkingSystem"
+import { ThinkingEngine } from "./tools/utils/ThinkingEngine"
 import { ToolDisplayUtils } from "./tools/utils/ToolDisplayUtils"
 import { ToolResultUtils } from "./tools/utils/ToolResultUtils"
 
 export class ToolExecutor {
 	private autoApprover: AutoApprove
 	private coordinator: ToolExecutorCoordinator
+	private explorationScratchpad: ExplorationScratchpad
+	private thinkingEngine: ThinkingEngine
+	private intelligentThinkingSystem: IntelligentThinkingSystem
 
 	// Auto-approval methods using the AutoApprove class
 	private shouldAutoApproveTool(toolName: ClineDefaultTool): boolean | [boolean, boolean] {
@@ -129,8 +139,11 @@ export class ToolExecutor {
 	) {
 		this.autoApprover = new AutoApprove(this.stateManager)
 
-		// Initialize the coordinator and register all tool handlers
+		// Initialize the coordinator, exploration scratchpad, thinking engine, and intelligent thinking system
 		this.coordinator = new ToolExecutorCoordinator()
+		this.explorationScratchpad = new ExplorationScratchpad()
+		this.thinkingEngine = new ThinkingEngine(this.explorationScratchpad)
+		this.intelligentThinkingSystem = new IntelligentThinkingSystem(this.explorationScratchpad, this.thinkingEngine)
 		this.registerToolHandlers()
 	}
 
@@ -230,6 +243,7 @@ export class ToolExecutor {
 		this.coordinator.register(new SummarizeTaskHandler(validator))
 		this.coordinator.register(new ReportBugHandler())
 		this.coordinator.register(new ApplyPatchHandler(validator))
+		this.coordinator.register(new ReasoningToolHandler(validator, this.explorationScratchpad, this.thinkingEngine))
 		this.coordinator.register(new GenerateExplanationToolHandler())
 	}
 
@@ -249,6 +263,75 @@ export class ToolExecutor {
 		const useWebp = this.api ? !modelDoesntSupportWebp(apiHandlerModel) : true
 		this.browserSession = new BrowserSession(this.stateManager, useWebp)
 		return this.browserSession
+	}
+
+	/**
+	 * Initialize intelligent thinking process for a new task
+	 */
+	public async initializeTaskThinking(taskDescription: string): Promise<void> {
+		await this.thinkingEngine.initializeTask(taskDescription)
+		await this.intelligentThinkingSystem.initializeIntelligentThinking(taskDescription)
+		await this.say("reasoning", `Iniciando processo de pensamento inteligente para: "${taskDescription}"`)
+	}
+
+	/**
+	 * Get current thinking history for debugging/analysis
+	 */
+	public getThinkingHistory(): string {
+		return this.thinkingEngine.formatThinkingHistory()
+	}
+
+	/**
+	 * Get intelligent thinking history
+	 */
+	public getIntelligentThinkingHistory(): string {
+		return this.intelligentThinkingSystem.formatIntelligentThinkingHistory()
+	}
+
+	/**
+	 * Execute intelligent thinking loop manually
+	 */
+	public async executeIntelligentThinkingLoop(maxIterations: number = 10): Promise<any> {
+		return await this.intelligentThinkingSystem.executeThinkingLoop(maxIterations)
+	}
+
+	/**
+	 * Register action result for intelligent reflection
+	 */
+	public registerActionResultForReflection(result: ToolResponse): void {
+		this.intelligentThinkingSystem.registerActionResult(result)
+	}
+
+	/**
+	 * Execute intelligent thinking loop and make final decision
+	 */
+	public async makeFinalDecision(): Promise<{
+		decision: string
+		confidence: number
+		actionPlan: string[]
+		reasoning: string
+		thoughtProcess?: any[]
+	}> {
+		// Execute intelligent thinking loop
+		const intelligentResult = await this.intelligentThinkingSystem.executeThinkingLoop()
+
+		// Get final decision from thinking engine as backup
+		const engineResult = await this.thinkingEngine.makeFinalDecision()
+
+		// Combine results
+		const finalResult = {
+			decision: intelligentResult.finalDecision || engineResult.decision,
+			confidence: Math.max(intelligentResult.confidence, engineResult.confidence),
+			actionPlan: engineResult.actionPlan,
+			reasoning: `Pensamento inteligente concluído após ${this.intelligentThinkingSystem.getConversationContext().currentIteration} iterações. ${engineResult.reasoning}`,
+			thoughtProcess: intelligentResult.thoughtProcess,
+		}
+
+		await this.say(
+			"reasoning",
+			`Decisão inteligente tomada: ${finalResult.decision} (Confiança: ${(finalResult.confidence * 100).toFixed(1)}%)`,
+		)
+		return finalResult
 	}
 
 	/**
@@ -321,6 +404,222 @@ export class ToolExecutor {
 	]
 
 	/**
+	 * Tools that are considered exploration tools for scratchpad caching
+	 */
+	private static readonly EXPLORATION_TOOLS: ClineDefaultTool[] = [
+		ClineDefaultTool.SEARCH,
+		ClineDefaultTool.FILE_READ,
+		ClineDefaultTool.LIST_FILES,
+		ClineDefaultTool.LIST_CODE_DEF,
+	]
+
+	/**
+	 * Check if a tool is an exploration tool
+	 */
+	private isExplorationTool(toolName: ClineDefaultTool): boolean {
+		return ToolExecutor.EXPLORATION_TOOLS.includes(toolName)
+	}
+
+	/**
+	 * Check exploration cache for existing results
+	 */
+	private checkExplorationCache(block: ToolUse): ToolResponse | undefined {
+		if (block.name === ClineDefaultTool.SEARCH) {
+			const query = block.params.regex || ""
+			const filePattern = block.params.file_pattern || "*"
+			const path = block.params.path || ""
+			const cachedEntry = this.explorationScratchpad.getCachedResult(block.name, query, path)
+			return cachedEntry?.result
+		} else if (block.name === ClineDefaultTool.FILE_READ) {
+			const filePath = block.params.path || ""
+			const cachedEntry = this.explorationScratchpad.getCachedResult(block.name, filePath, filePath)
+			return cachedEntry?.result
+		} else if (block.name === ClineDefaultTool.LIST_FILES) {
+			const filePath = block.params.path || ""
+			const recursive = block.params.recursive || "false"
+			const cachedEntry = this.explorationScratchpad.getCachedResult(block.name, filePath, filePath)
+			return cachedEntry?.result
+		}
+		return undefined
+	}
+
+	/**
+	 * Perform automatic exploration at the start of a task
+	 */
+	private async performAutoExploration(): Promise<void> {
+		// Phase 1: Basic project structure exploration
+		await this.say("text", "Starting automatic exploration to understand the project structure...")
+
+		try {
+			// 1. List root directory to understand project structure
+			const listRootResult = await this.listFilesHandler("", false)
+			this.storeExplorationResult(
+				{
+					type: "tool_use",
+					name: ClineDefaultTool.LIST_FILES,
+					params: { path: "", recursive: "false" },
+					partial: false,
+				},
+				listRootResult,
+			)
+
+			// 2. Read key configuration files
+			const configFiles = ["package.json", "README.md", ".gitignore", "tsconfig.json"]
+			for (const configFile of configFiles) {
+				try {
+					const readResult = await this.readFileHandler(configFile)
+					this.storeExplorationResult(
+						{
+							type: "tool_use",
+							name: ClineDefaultTool.FILE_READ,
+							params: { path: configFile },
+							partial: false,
+						},
+						readResult,
+					)
+				} catch (error) {
+					// File doesn't exist, continue
+				}
+			}
+
+			// 3. List source directories
+			const sourceDirs = ["src", "lib", "app", "components", "pages"]
+			for (const dir of sourceDirs) {
+				try {
+					const listResult = await this.listFilesHandler(dir, false)
+					this.storeExplorationResult(
+						{
+							type: "tool_use",
+							name: ClineDefaultTool.LIST_FILES,
+							params: { path: dir, recursive: "false" },
+							partial: false,
+						},
+						listResult,
+					)
+				} catch (error) {
+					// Directory doesn't exist, continue
+				}
+			}
+
+			// 4. Check if exploration is sufficient
+			if (this.explorationScratchpad.shouldTransitionToThinking()) {
+				this.explorationScratchpad.transitionToNextPhase()
+				await this.say(
+					"text",
+					`Auto-exploration complete. Found ${this.explorationScratchpad.generateSummary().totalEntries} data points. Ready for analysis.`,
+				)
+			} else {
+				await this.say(
+					"text",
+					"Auto-exploration complete, but more investigation may be needed. You can now proceed with specific questions.",
+				)
+			}
+		} catch (error) {
+			await this.say("error", `Auto-exploration encountered an error: ${error}. You can continue manually.`)
+		}
+	}
+
+	/**
+	 * Handle cached exploration results
+	 */
+	private async handleCachedResult(block: ToolUse, cachedResult: ToolResponse): Promise<void> {
+		// Update exploration entry with higher confidence (cache hit)
+		const existingEntry = this.explorationScratchpad.getCachedResult(
+			block.name,
+			this.getExplorationQuery(block),
+			block.params.path,
+		)
+
+		if (existingEntry) {
+			// Increase confidence for cached results (they're validated)
+			existingEntry.confidence = Math.min(1.0, existingEntry.confidence + 0.2)
+			this.explorationScratchpad.addEntry(existingEntry)
+		}
+
+		// Optional: Notify about cache usage
+		// await this.say("exploration_cache_used", `Using cached result for ${block.name} operation`)
+	}
+
+	/**
+	 * Helper methods for auto-exploration
+	 */
+	private async listFilesHandler(relativePath: string, recursive: boolean): Promise<string> {
+		const absolutePath = path.resolve(this.cwd, relativePath)
+		const [files] = await listFiles(absolutePath, recursive, 1000) // limit = 1000
+		return files.map((file: any) => file.name).join("\n")
+	}
+
+	private async readFileHandler(relativePath: string): Promise<string> {
+		const absolutePath = path.resolve(this.cwd, relativePath)
+		return await fs.promises.readFile(absolutePath, "utf-8")
+	}
+
+	/**
+	 * Store exploration result in scratchpad
+	 */
+	private async storeExplorationResult(block: ToolUse, toolResult: ToolResponse): Promise<void> {
+		// Calculate confidence based on result quality
+		let confidence = 0.7
+		if (typeof toolResult === "string") {
+			if (toolResult.includes("Found 0 results")) {
+				confidence = 0.3
+			} else if (toolResult.length > 100) {
+				confidence = 0.9
+			} else {
+				confidence = 0.7
+			}
+		}
+
+		// Determine tags based on tool and content
+		const tags: string[] = [block.name]
+		if (block.name === ClineDefaultTool.SEARCH) {
+			tags.push("search", "regex")
+		} else if (block.name === ClineDefaultTool.FILE_READ) {
+			tags.push("file_content")
+		} else if (block.name === ClineDefaultTool.LIST_FILES) {
+			tags.push("directory_listing")
+		}
+
+		// Create exploration entry
+		const entry: Parameters<typeof this.explorationScratchpad.addEntry>[0] = {
+			toolName: block.name,
+			query: this.getExplorationQuery(block),
+			result: toolResult,
+			confidence,
+			tags,
+			filePath: block.params.path,
+			relevance: 1.0,
+			toolParams: block.params,
+		}
+
+		// Add to scratchpad
+		this.explorationScratchpad.addEntry(entry)
+
+		// Check if we should transition phases
+		if (this.explorationScratchpad.hasSufficientExploration()) {
+			const currentPhase = this.explorationScratchpad.getCurrentPhase()
+			if (currentPhase === "EXPLORE") {
+				this.explorationScratchpad.transitionToNextPhase()
+				// await this.say("exploration_phase_transition", `Transitioning from EXPLORE to THINK phase`)
+			}
+		}
+	}
+
+	/**
+	 * Get exploration query for caching
+	 */
+	private getExplorationQuery(block: ToolUse): string {
+		if (block.name === ClineDefaultTool.SEARCH) {
+			return (block.params.regex || "") + (block.params.file_pattern ? ` (${block.params.file_pattern})` : "")
+		} else if (block.name === ClineDefaultTool.FILE_READ) {
+			return block.params.path || ""
+		} else if (block.name === ClineDefaultTool.LIST_FILES) {
+			return (block.params.path || "") + (block.params.recursive ? " (recursive)" : "")
+		}
+		return JSON.stringify(block.params)
+	}
+
+	/**
 	 * Execute a tool through the coordinator if it's registered.
 	 *
 	 * This is the main entry point for tool execution, called by the Task class.
@@ -381,6 +680,31 @@ export class ToolExecutor {
 				await this.browserSession.closeBrowser()
 			}
 
+			// PHASE 1: THINKING - Mandatory thinking before any tool execution
+			const thinkingResult = await this.thinkingEngine.thinkBeforeAction(block.name, block.params)
+			await this.say(
+				"reasoning",
+				`Pensando: ${thinkingResult.reasoning} (Confiança: ${(thinkingResult.confidence * 100).toFixed(1)}%)`,
+			)
+
+			if (!thinkingResult.shouldProceed) {
+				// Use cached result if available
+				const cachedResult = this.checkExplorationCache(block)
+				if (cachedResult) {
+					this.pushToolResult(cachedResult, block)
+					await this.handleCachedResult(block, cachedResult)
+					return true
+				}
+			}
+
+			// PHASE 2: EXPLORATION - Check if we should perform auto-exploration first
+			if (this.explorationScratchpad.shouldPerformAutoExploration() && this.isExplorationTool(block.name)) {
+				await this.performAutoExploration()
+				return true // Don't execute the original tool yet
+			}
+
+			// PHASE 3: EXECUTION - Proceed with normal tool execution
+
 			// Handle partial blocks
 			if (block.partial) {
 				await this.handlePartialBlock(block, config)
@@ -389,6 +713,30 @@ export class ToolExecutor {
 
 			// Handle complete blocks
 			await this.handleCompleteBlock(block, config)
+
+			// PHASE 4: INTELLIGENT RESULT ANALYSIS - Analyze results with intelligent thinking system
+			// Note: toolResult is not available here as it's handled inside handleCompleteBlock
+			// We'll analyze the result that was already pushed to the scratchpad
+			const analysisResult = await this.thinkingEngine.analyzeResult(block.name, block.params, "Result processed")
+
+			// Register result for intelligent reflection
+			this.intelligentThinkingSystem.registerActionResult(analysisResult.insights.join(". "))
+
+			if (analysisResult.insights.length > 0) {
+				await this.say("reasoning", `Análise inteligente dos resultados: ${analysisResult.insights.join(". ")}`)
+			}
+
+			if (analysisResult.shouldTransition) {
+				const currentPhase = this.explorationScratchpad.getCurrentPhase()
+				this.explorationScratchpad.transitionToNextPhase()
+				const newPhase = this.explorationScratchpad.getCurrentPhase()
+				await this.say("reasoning", `Transição inteligente de fase: ${currentPhase} → ${newPhase}`)
+			}
+
+			if (analysisResult.nextActions.length > 0) {
+				await this.say("reasoning", `Próximas ações inteligentes sugeridas: ${analysisResult.nextActions.join(", ")}`)
+			}
+
 			return true
 		} catch (error) {
 			await this.handleError(`executing ${block.name}`, error as Error, block)

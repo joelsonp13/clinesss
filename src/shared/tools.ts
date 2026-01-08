@@ -31,6 +31,7 @@ export enum ClineDefaultTool {
 	NEW_RULE = "new_rule",
 	APPLY_PATCH = "apply_patch",
 	GENERATE_EXPLANATION = "generate_explanation",
+	REASONING = "reasoning_functions",
 }
 
 // Array of all tool names for compatibility
@@ -48,4 +49,5 @@ export const READ_ONLY_TOOLS = [
 	ClineDefaultTool.ASK,
 	ClineDefaultTool.WEB_SEARCH,
 	ClineDefaultTool.WEB_FETCH,
+	ClineDefaultTool.REASONING,
 ] as const
